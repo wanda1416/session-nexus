@@ -3,6 +3,7 @@ pub mod connector;
 pub mod discover;
 pub mod models;
 pub mod provider;
+pub mod runner;
 
 #[cfg(test)]
 mod tests {
@@ -25,7 +26,10 @@ mod tests {
         let profiles = phase1_profiles();
         let grok = profiles.iter().find(|p| p.id == "grok").unwrap();
         let fresh = command_for(grok, "hello", None).unwrap();
-        assert_eq!(fresh, vec!["-p", "hello", "--output-format", "json"]);
+        assert_eq!(
+            fresh,
+            vec!["-p", "hello", "--output-format", "plain", "--no-subagents", "--permission-mode", "dontAsk"]
+        );
         let again = command_for(grok, "next", Some("abc")).unwrap();
         assert!(again.iter().any(|a| a == "abc"));
 
@@ -72,12 +76,22 @@ fn core_status() -> CoreStatus {
     }
 }
 
+#[tauri::command]
+fn provider_status() -> Vec<runner::ProviderStatus> {
+    runner::installed_providers()
+}
+
+#[tauri::command]
+fn run_agent(provider: String, prompt: String, cwd: Option<String>) -> runner::AgentRun {
+    runner::run_agent(&provider, &prompt, cwd.as_deref())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     browser_mcp::spawn(browser_mcp::DEFAULT_ADDR);
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![core_status])
+        .invoke_handler(tauri::generate_handler![core_status, provider_status, run_agent])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

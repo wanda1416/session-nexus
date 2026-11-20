@@ -169,7 +169,7 @@ DSH 网页如果用户已经在这个浏览器里打开，用 `find_tab` 复用�
 ## 9. 项目结构
 
 ```
-session-nexus/
+./
 ├── docs/
 │   └── plan.md                 # 本方案
 ├── src-tauri/                  # Rust 后端

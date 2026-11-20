@@ -8,7 +8,7 @@ export type WorkSession = {
   id: string;
   contactId: string;
   task: string;
-  status: "Working" | "Finished";
+  status: "Working" | "Finished" | "Error";
 };
 
 export type ChatMessage = {

@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 import {
   type Group,
@@ -9,13 +10,33 @@ import {
   seedGroups,
 } from "./chat";
 
+type AgentRun = { provider: string; ok: boolean; text: string };
+type ProviderStatus = { id: string; installed: boolean };
+
 export default function App() {
   const [groups, setGroups] = useState<Group[]>(seedGroups);
+  const [people, setPeople] = useState(contacts);
+  const [bridgeNote, setBridgeNote] = useState("");
   const [activeId, setActiveId] = useState("group-a");
   const [draft, setDraft] = useState("");
   const [creating, setCreating] = useState(false);
   const [mentionOpen, setMentionOpen] = useState(false);
   const active = groups.find((group) => group.id === activeId) ?? groups[0];
+
+  useEffect(() => {
+    invoke<ProviderStatus[]>("provider_status")
+      .then((list) => {
+        setPeople(
+          contacts.map((contact) => ({
+            ...contact,
+            installed: list.find((item) => item.id === contact.id)?.installed ?? false,
+          })),
+        );
+      })
+      .catch(() => {
+        setBridgeNote("当前窗口没有连上桌面后端。在项目根目录运行 pnpm tauri dev 后，发送才会调用本机 CLI。");
+      });
+  }, []);
 
   const title = useMemo(() => active?.name ?? "SessionNexus", [active]);
 
@@ -25,6 +46,9 @@ export default function App() {
     const mentioned = parseMentions(text, active.memberIds);
     const targets = mentioned.length > 0 ? mentioned : active.memberIds;
     const task = text.replace(/@\S+/g, "").trim() || "处理群里的新消息";
+    const prompt = `项目：${active.name}\n工作目录：${active.cwd || "未指定"}\n说明：${active.brief}\n任务：${task}\n只用文字回复结果，不要再派生子代理。`;
+    const groupId = active.id;
+    const cwd = active.cwd;
     const userMessage = { id: nextId("m"), kind: "user" as const, text };
     const works = targets.map((contactId) => ({
       id: nextId("work"),
@@ -39,20 +63,20 @@ export default function App() {
           id: nextId("m"),
           kind: "room" as const,
           contactId: work.contactId,
-          text: `${name} 的房间会话收到了。需要开工的部分交给调度接口，不拉我自己的子代理。`,
+          text: `${name} 的任务已交给本机 CLI。`,
         },
         {
           id: nextId("m"),
           kind: "work" as const,
           contactId: work.contactId,
           workId: work.id,
-          text: `工作会话已开始：${work.task}`,
+          text: "正在调用本机 CLI…",
         },
       ];
     });
     setGroups((current) =>
       current.map((group) =>
-        group.id !== active.id
+        group.id !== groupId
           ? group
           : {
               ...group,
@@ -63,6 +87,42 @@ export default function App() {
     );
     setDraft("");
     setMentionOpen(false);
+    for (const work of works) {
+      invoke<AgentRun>("run_agent", { provider: work.contactId, prompt, cwd: cwd || null })
+        .then((result) => {
+          setGroups((current) =>
+            current.map((group) =>
+              group.id !== groupId
+                ? group
+                : {
+                    ...group,
+                    works: group.works.map((item) =>
+                      item.id === work.id ? { ...item, status: result.ok ? "Finished" : "Error" } : item,
+                    ),
+                    messages: group.messages.map((message) =>
+                      message.workId === work.id ? { ...message, text: result.text } : message,
+                    ),
+                  },
+            ),
+          );
+        })
+        .catch((error: unknown) => {
+          const detail = error instanceof Error ? error.message : String(error);
+          setGroups((current) =>
+            current.map((group) =>
+              group.id !== groupId
+                ? group
+                : {
+                    ...group,
+                    works: group.works.map((item) => (item.id === work.id ? { ...item, status: "Error" } : item)),
+                    messages: group.messages.map((message) =>
+                      message.workId === work.id ? { ...message, text: detail } : message,
+                    ),
+                  },
+            ),
+          );
+        });
+    }
   }
 
   function openDirect(contactId: string) {
@@ -106,7 +166,7 @@ export default function App() {
         <section>
           <h2>联系人</h2>
           <ul>
-            {contacts.map((contact) => (
+            {people.map((contact) => (
               <li key={contact.id}>
                 <button type="button" className="row" onClick={() => openDirect(contact.id)} disabled={!contact.installed}>
                   <Avatar id={contact.id} />
@@ -146,6 +206,7 @@ export default function App() {
           <div>
             <h1>{title}</h1>
             <p>{active?.cwd || "未设置工作目录"}</p>
+            {bridgeNote ? <p>{bridgeNote}</p> : null}
           </div>
         </header>
         <div className="messages">
@@ -255,6 +316,7 @@ export default function App() {
 
       {creating ? (
         <CreateGroup
+          people={people}
           onCancel={() => setCreating(false)}
           onCreate={(group) => {
             setGroups((current) => [...current, group]);
@@ -268,9 +330,11 @@ export default function App() {
 }
 
 function CreateGroup({
+  people,
   onCancel,
   onCreate,
 }: {
+  people: typeof contacts;
   onCancel: () => void;
   onCreate: (group: Group) => void;
 }) {
@@ -284,7 +348,7 @@ function CreateGroup({
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          const memberIds = picked.filter((id) => contactById(id).installed);
+          const memberIds = picked.filter((id) => people.find((contact) => contact.id === id)?.installed);
           if (!name.trim() || memberIds.length === 0) return;
           onCreate({
             id: nextId("group"),
@@ -318,7 +382,7 @@ function CreateGroup({
         </label>
         <fieldset>
           <legend>拉入联系人</legend>
-          {contacts.map((contact) => (
+          {people.map((contact) => (
             <label key={contact.id}>
               <input
                 type="checkbox"
