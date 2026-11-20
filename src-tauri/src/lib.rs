@@ -4,6 +4,7 @@ pub mod discover;
 pub mod models;
 pub mod provider;
 pub mod runner;
+pub mod store;
 
 #[cfg(test)]
 mod tests {
@@ -86,12 +87,30 @@ fn run_agent(provider: String, prompt: String, cwd: Option<String>) -> runner::A
     runner::run_agent(&provider, &prompt, cwd.as_deref())
 }
 
+#[tauri::command]
+fn load_groups(db: tauri::State<store::ChatDb>) -> Result<Vec<store::StoredGroup>, String> {
+    db.load()
+}
+
+#[tauri::command]
+fn save_group(db: tauri::State<store::ChatDb>, group: store::StoredGroup) -> Result<(), String> {
+    db.save(&group)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     browser_mcp::spawn(browser_mcp::DEFAULT_ADDR);
+    let db = store::ChatDb::open().expect("open session database");
     tauri::Builder::default()
+        .manage(db)
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![core_status, provider_status, run_agent])
+        .invoke_handler(tauri::generate_handler![
+            core_status,
+            provider_status,
+            run_agent,
+            load_groups,
+            save_group
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

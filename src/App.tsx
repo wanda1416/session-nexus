@@ -18,6 +18,7 @@ export default function App() {
   const [people, setPeople] = useState(contacts);
   const [bridgeNote, setBridgeNote] = useState("");
   const [activeId, setActiveId] = useState("group-a");
+  const [persisted, setPersisted] = useState(false);
   const [draft, setDraft] = useState("");
   const [creating, setCreating] = useState(false);
   const [mentionOpen, setMentionOpen] = useState(false);
@@ -36,7 +37,21 @@ export default function App() {
       .catch(() => {
         setBridgeNote("当前窗口没有连上桌面后端。在项目根目录运行 pnpm tauri dev 后，发送才会调用本机 CLI。");
       });
+    invoke<Group[]>("load_groups")
+      .then((list) => {
+        setPersisted(true);
+        setGroups(list);
+        setActiveId(list[0]?.id ?? "");
+      })
+      .catch(() => {
+        setPersisted(false);
+      });
   }, []);
+
+  function persist(group: Group) {
+    if (!persisted) return;
+    invoke("save_group", { group }).catch(() => {});
+  }
 
   const title = useMemo(() => active?.name ?? "SessionNexus", [active]);
 
@@ -75,15 +90,16 @@ export default function App() {
       ];
     });
     setGroups((current) =>
-      current.map((group) =>
-        group.id !== groupId
-          ? group
-          : {
-              ...group,
-              messages: [...group.messages, userMessage, ...replies],
-              works: [...group.works, ...works],
-            },
-      ),
+      current.map((group) => {
+        if (group.id !== groupId) return group;
+        const next = {
+          ...group,
+          messages: [...group.messages, userMessage, ...replies],
+          works: [...group.works, ...works],
+        };
+        persist(next);
+        return next;
+      }),
     );
     setDraft("");
     setMentionOpen(false);
@@ -91,35 +107,41 @@ export default function App() {
       invoke<AgentRun>("run_agent", { provider: work.contactId, prompt, cwd: cwd || null })
         .then((result) => {
           setGroups((current) =>
-            current.map((group) =>
-              group.id !== groupId
-                ? group
-                : {
-                    ...group,
-                    works: group.works.map((item) =>
-                      item.id === work.id ? { ...item, status: result.ok ? "Finished" : "Error" } : item,
-                    ),
-                    messages: group.messages.map((message) =>
-                      message.workId === work.id ? { ...message, text: result.text } : message,
-                    ),
-                  },
-            ),
+            current.map((group) => {
+              if (group.id !== groupId) return group;
+              const next = {
+                ...group,
+                works: group.works.map((item) =>
+                  item.id === work.id
+                    ? { ...item, status: result.ok ? ("Finished" as const) : ("Error" as const) }
+                    : item,
+                ),
+                messages: group.messages.map((message) =>
+                  message.workId === work.id ? { ...message, text: result.text } : message,
+                ),
+              };
+              persist(next);
+              return next;
+            }),
           );
         })
         .catch((error: unknown) => {
           const detail = error instanceof Error ? error.message : String(error);
           setGroups((current) =>
-            current.map((group) =>
-              group.id !== groupId
-                ? group
-                : {
-                    ...group,
-                    works: group.works.map((item) => (item.id === work.id ? { ...item, status: "Error" } : item)),
-                    messages: group.messages.map((message) =>
-                      message.workId === work.id ? { ...message, text: detail } : message,
-                    ),
-                  },
-            ),
+            current.map((group) => {
+              if (group.id !== groupId) return group;
+              const next = {
+                ...group,
+                works: group.works.map((item) =>
+                  item.id === work.id ? { ...item, status: "Error" as const } : item,
+                ),
+                messages: group.messages.map((message) =>
+                  message.workId === work.id ? { ...message, text: detail } : message,
+                ),
+              };
+              persist(next);
+              return next;
+            }),
           );
         });
     }
@@ -152,6 +174,7 @@ export default function App() {
     };
     setGroups((current) => [...current, group]);
     setActiveId(id);
+    persist(group);
   }
 
   return (
@@ -210,6 +233,7 @@ export default function App() {
           </div>
         </header>
         <div className="messages">
+          {!active ? <p className="brief">还没有群。点左上角「新建群」，拉进联系人后再发消息。</p> : null}
           {active?.brief ? <p className="brief">{active.brief}</p> : null}
           {active?.messages.map((message) => (
             <article key={message.id} className={`bubble ${message.kind}`}>
@@ -321,6 +345,7 @@ export default function App() {
           onCreate={(group) => {
             setGroups((current) => [...current, group]);
             setActiveId(group.id);
+            persist(group);
             setCreating(false);
           }}
         />
