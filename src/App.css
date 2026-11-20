@@ -102,6 +102,43 @@ ul { list-style: none; margin: 0; padding: 0 8px 8px; }
 .a-qoder { background: #0f6b4c; }
 .a-dsh { background: #7a3e00; }
 .a-codex { background: #0b3d91; }
+.a-dsh-web { background: #9a5000; }
+.a-gemini-web { background: #1a73e8; }
+.a-chatgpt-web { background: #10a37f; }
+
+.contact-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.contact-item .row {
+  flex: 1;
+  min-width: 0;
+}
+
+.icon-btn {
+  flex: none;
+  border: 1px solid #d0d4dc;
+  background: #fff;
+  color: #4b5563;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.icon-btn:hover {
+  background: #eef2ff;
+  color: #1f2329;
+}
+
+.thread-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
 
 .thread {
   display: flex;
@@ -169,16 +206,22 @@ ul { list-style: none; margin: 0; padding: 0 8px 8px; }
   position: absolute;
   left: 12px;
   bottom: 88px;
+  min-width: 220px;
+  max-height: 260px;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   background: #fff;
   border: 1px solid #e6e8eb;
   border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(31, 35, 41, 0.12);
-  overflow: hidden;
+  box-shadow: 0 8px 24px rgba(31, 35, 41, 0.14);
+  z-index: 20;
 }
 
 .mention button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   border: 0;
   background: #fff;
   text-align: left;
@@ -186,7 +229,62 @@ ul { list-style: none; margin: 0; padding: 0 8px 8px; }
   cursor: pointer;
 }
 
-.mention button:hover { background: #f3f4f6; }
+.mention button span:nth-child(2) {
+  flex: 1;
+  font-weight: 500;
+}
+
+.mention button small {
+  color: #8f959e;
+  font-size: 11px;
+}
+
+.mention button:hover,
+.mention button.active {
+  background: #e8f0ff;
+}
+
+.at-btn {
+  flex: none;
+  width: 36px;
+  border: 1px solid #d0d3d8;
+  border-radius: 8px;
+  background: #f5f6f8;
+  color: #1f2329;
+  font-weight: 600;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.at-btn:hover {
+  background: #e8f0ff;
+  border-color: #1664ff;
+  color: #1664ff;
+}
+
+.typing-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  background: #eef3ff;
+  border-top: 1px solid #dbe6ff;
+  color: #1664ff;
+  font-size: 12px;
+}
+
+.typing-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #1664ff;
+  animation: nexus-pulse 1.1s infinite ease-in-out;
+}
+
+@keyframes nexus-pulse {
+  0%, 100% { opacity: 0.3; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.1); }
+}
 
 .plain li { cursor: default; }
 .empty { color: #646a73; padding: 8px; }

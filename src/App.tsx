@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 import {
@@ -10,8 +10,21 @@ import {
   seedGroups,
 } from "./chat";
 
-type AgentRun = { provider: string; ok: boolean; text: string };
+type AgentRun = {
+  provider: string;
+  ok: boolean;
+  text: string;
+  native_session_id?: string | null;
+  dispatch_task?: string | null;
+};
 type ProviderStatus = { id: string; installed: boolean };
+type ContactProfile = {
+  contactId: string;
+  model: string;
+  apiKey: string;
+  envText: string;
+  persona: string;
+};
 
 export default function App() {
   const [groups, setGroups] = useState<Group[]>(seedGroups);
@@ -21,22 +34,88 @@ export default function App() {
   const [persisted, setPersisted] = useState(false);
   const [draft, setDraft] = useState("");
   const [creating, setCreating] = useState(false);
-  const [mentionOpen, setMentionOpen] = useState(false);
+  const [editingContactId, setEditingContactId] = useState<string | null>(null);
+  const [profiles, setProfiles] = useState<Record<string, ContactProfile>>({});
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const [typingByGroup, setTypingByGroup] = useState<Record<string, { key: string; label: string }[]>>({});
   const active = groups.find((group) => group.id === activeId) ?? groups[0];
 
+  function addTyping(groupId: string, key: string, label: string) {
+    setTypingByGroup((current) => {
+      const list = current[groupId] ?? [];
+      return {
+        ...current,
+        [groupId]: [...list.filter((item) => item.key !== key), { key, label }],
+      };
+    });
+  }
+
+  function removeTyping(groupId: string, key: string) {
+    setTypingByGroup((current) => {
+      const list = current[groupId] ?? [];
+      return {
+        ...current,
+        [groupId]: list.filter((item) => item.key !== key),
+      };
+    });
+  }
+
+  const mentionCandidates = useMemo(() => {
+    if (mentionQuery === null || !active) return [];
+    const q = mentionQuery.toLowerCase();
+    const inGroup = active.memberIds.map((id) => ({
+      contact: people.find((p) => p.id === id) ?? contactById(id),
+      inGroup: true,
+    }));
+    const others = people
+      .filter((p) => p.installed && !active.memberIds.includes(p.id))
+      .map((contact) => ({ contact, inGroup: false }));
+    return [...inGroup, ...others].filter(
+      ({ contact }) =>
+        !q || contact.name.toLowerCase().includes(q) || contact.id.toLowerCase().includes(q),
+    );
+  }, [mentionQuery, active, people]);
+
+  function applyMention(contactId: string) {
+    const name = contactById(contactId).name;
+    setDraft((value) => {
+      if (/@([^\s@]*)$/.test(value)) {
+        return value.replace(/@([^\s@]*)$/, `@${name} `);
+      }
+      return `${value}${value.endsWith(" ") || !value ? "" : " "}@${name} `;
+    });
+    if (active && !active.memberIds.includes(contactId)) {
+      setGroups((current) =>
+        current.map((group) => {
+          if (group.id !== active.id) return group;
+          const next = { ...group, memberIds: [...group.memberIds, contactId] };
+          persist(next);
+          return next;
+        }),
+      );
+    }
+    setMentionQuery(null);
+    setMentionIndex(0);
+  }
+
   useEffect(() => {
-    invoke<ProviderStatus[]>("provider_status")
-      .then((list) => {
-        setPeople(
-          contacts.map((contact) => ({
-            ...contact,
-            installed: list.find((item) => item.id === contact.id)?.installed ?? false,
-          })),
-        );
-      })
-      .catch(() => {
-        setBridgeNote("当前窗口没有连上桌面后端。在项目根目录运行 pnpm tauri dev 后，发送才会调用本机 CLI。");
-      });
+    const refreshProviders = () => {
+      invoke<ProviderStatus[]>("provider_status")
+        .then((list) => {
+          setPeople(
+            contacts.map((contact) => ({
+              ...contact,
+              installed: list.find((item) => item.id === contact.id)?.installed ?? false,
+            })),
+          );
+        })
+        .catch(() => {
+          setBridgeNote("当前窗口没有连上桌面后端。在项目根目录运行 pnpm tauri dev 后，发送才会调用本机 CLI。");
+        });
+    };
+    refreshProviders();
+    const timer = window.setInterval(refreshProviders, 3000);
     invoke<Group[]>("load_groups")
       .then((list) => {
         setPersisted(true);
@@ -46,6 +125,16 @@ export default function App() {
       .catch(() => {
         setPersisted(false);
       });
+    invoke<ContactProfile[]>("load_contact_profiles")
+      .then((list) => {
+        const map: Record<string, ContactProfile> = {};
+        for (const item of list) {
+          map[item.contactId] = item;
+        }
+        setProfiles(map);
+      })
+      .catch(() => {});
+    return () => window.clearInterval(timer);
   }, []);
 
   function persist(group: Group) {
@@ -58,86 +147,186 @@ export default function App() {
   function send() {
     const text = draft.trim();
     if (!text || !active) return;
-    const mentioned = parseMentions(text, active.memberIds);
+    const allKnownIds = people.map((p) => p.id);
+    const mentioned = parseMentions(text, allKnownIds);
     const targets = mentioned.length > 0 ? mentioned : active.memberIds;
-    const task = text.replace(/@\S+/g, "").trim() || "处理群里的新消息";
-    const prompt = `项目：${active.name}\n工作目录：${active.cwd || "未指定"}\n说明：${active.brief}\n任务：${task}\n只用文字回复结果，不要再派生子代理。`;
     const groupId = active.id;
     const cwd = active.cwd;
+    const groupName = active.name;
+    const brief = active.brief;
+    const rooms = active.roomSessions;
     const userMessage = { id: nextId("m"), kind: "user" as const, text };
-    const works = targets.map((contactId) => ({
-      id: nextId("work"),
+    const pending = targets.map((contactId) => ({
       contactId,
-      task,
-      status: "Working" as const,
+      turnKey: nextId("turn"),
+      nativeSessionId: rooms.find((room) => room.contactId === contactId)?.nativeSessionId,
     }));
-    const replies = works.flatMap((work) => {
-      const name = contactById(work.contactId).name;
-      return [
-        {
-          id: nextId("m"),
-          kind: "room" as const,
-          contactId: work.contactId,
-          text: `${name} 的任务已交给本机 CLI。`,
-        },
-        {
-          id: nextId("m"),
-          kind: "work" as const,
-          contactId: work.contactId,
-          workId: work.id,
-          text: "正在调用本机 CLI…",
-        },
-      ];
-    });
     setGroups((current) =>
       current.map((group) => {
         if (group.id !== groupId) return group;
+        const memberIds = [...new Set([...group.memberIds, ...targets])];
         const next = {
           ...group,
-          messages: [...group.messages, userMessage, ...replies],
-          works: [...group.works, ...works],
+          memberIds,
+          messages: [...group.messages, userMessage],
         };
         persist(next);
         return next;
       }),
     );
     setDraft("");
-    setMentionOpen(false);
-    for (const work of works) {
-      invoke<AgentRun>("run_agent", { provider: work.contactId, prompt, cwd: cwd || null })
+    setMentionQuery(null);
+    for (const item of pending) {
+      const contactName = contactById(item.contactId).name;
+      const roomTypingKey = `room:${item.turnKey}`;
+      addTyping(groupId, roomTypingKey, `${contactName} 正在输入…`);
+      const roomPrompt = item.nativeSessionId
+        ? text
+        : [
+            `你是本群里 ${contactName} 的主对话（房间会话）。`,
+            `项目：${groupName}`,
+            `工作目录：${cwd || "未指定"}`,
+            `群说明：${brief}`,
+            `用户消息：${text}`,
+          ].join("\n");
+      invoke<AgentRun>("run_agent", {
+        provider: item.contactId,
+        prompt: roomPrompt,
+        cwd: cwd || null,
+        nativeSessionId: item.nativeSessionId ?? null,
+        role: "room",
+      })
         .then((result) => {
+          removeTyping(groupId, roomTypingKey);
+          const task = result.dispatch_task?.trim();
+          const workId = task ? nextId("work") : "";
           setGroups((current) =>
             current.map((group) => {
               if (group.id !== groupId) return group;
+              const roomSessions = result.native_session_id
+                ? [
+                    ...group.roomSessions.filter((room) => room.contactId !== item.contactId),
+                    { contactId: item.contactId, nativeSessionId: result.native_session_id },
+                  ]
+                : group.roomSessions;
               const next = {
                 ...group,
-                works: group.works.map((item) =>
-                  item.id === work.id
-                    ? { ...item, status: result.ok ? ("Finished" as const) : ("Error" as const) }
-                    : item,
-                ),
-                messages: group.messages.map((message) =>
-                  message.workId === work.id ? { ...message, text: result.text } : message,
-                ),
+                roomSessions,
+                works: task
+                  ? [
+                      ...group.works,
+                      {
+                        id: workId,
+                        contactId: item.contactId,
+                        task,
+                        status: "Working" as const,
+                      },
+                    ]
+                  : group.works,
+                messages: [
+                  ...group.messages,
+                  {
+                    id: nextId("m"),
+                    kind: "room" as const,
+                    contactId: item.contactId,
+                    text: result.text,
+                  },
+                ],
               };
               persist(next);
               return next;
             }),
           );
+          if (!task) return;
+          const workTypingKey = `work:${workId}`;
+          addTyping(groupId, workTypingKey, `${contactName} 正在执行工作任务…`);
+          const workPrompt = [
+            `项目：${groupName}`,
+            `工作目录：${cwd || "未指定"}`,
+            `说明：${brief}`,
+            `任务：${task}`,
+            "只用文字回复结果，不要再派生子代理。",
+          ].join("\n");
+          invoke<AgentRun>("run_agent", {
+            provider: item.contactId,
+            prompt: workPrompt,
+            cwd: cwd || null,
+            nativeSessionId: null,
+            role: "work",
+          })
+            .then((workResult) => {
+              removeTyping(groupId, workTypingKey);
+              setGroups((current) =>
+                current.map((group) => {
+                  if (group.id !== groupId) return group;
+                  const next = {
+                    ...group,
+                    works: group.works.map((work) =>
+                      work.id === workId
+                        ? { ...work, status: workResult.ok ? ("Finished" as const) : ("Error" as const) }
+                        : work,
+                    ),
+                    messages: [
+                      ...group.messages,
+                      {
+                        id: nextId("m"),
+                        kind: "work" as const,
+                        contactId: item.contactId,
+                        workId,
+                        text: workResult.text,
+                      },
+                    ],
+                  };
+                  persist(next);
+                  return next;
+                }),
+              );
+            })
+            .catch((error: unknown) => {
+              removeTyping(groupId, workTypingKey);
+              const detail = error instanceof Error ? error.message : String(error);
+              setGroups((current) =>
+                current.map((group) => {
+                  if (group.id !== groupId) return group;
+                  const next = {
+                    ...group,
+                    works: group.works.map((work) =>
+                      work.id === workId ? { ...work, status: "Error" as const } : work,
+                    ),
+                    messages: [
+                      ...group.messages,
+                      {
+                        id: nextId("m"),
+                        kind: "work" as const,
+                        contactId: item.contactId,
+                        workId,
+                        text: detail,
+                      },
+                    ],
+                  };
+                  persist(next);
+                  return next;
+                }),
+              );
+            });
         })
         .catch((error: unknown) => {
+          removeTyping(groupId, roomTypingKey);
           const detail = error instanceof Error ? error.message : String(error);
           setGroups((current) =>
             current.map((group) => {
               if (group.id !== groupId) return group;
               const next = {
                 ...group,
-                works: group.works.map((item) =>
-                  item.id === work.id ? { ...item, status: "Error" as const } : item,
-                ),
-                messages: group.messages.map((message) =>
-                  message.workId === work.id ? { ...message, text: detail } : message,
-                ),
+                messages: [
+                  ...group.messages,
+                  {
+                    id: nextId("m"),
+                    kind: "room" as const,
+                    contactId: item.contactId,
+                    text: detail,
+                  },
+                ],
               };
               persist(next);
               return next;
@@ -164,14 +353,10 @@ export default function App() {
       brief: `与 ${contact.name} 的单聊。`,
       memberIds: [contactId],
       works: [],
-      messages: [
-        {
-          id: nextId("m"),
-          kind: "system",
-          text: `已为 ${contact.name} 打开房间会话。`,
-        },
-      ],
+      roomSessions: [],
+      messages: [],
     };
+    setBridgeNote(`已为 ${contact.name} 打开房间会话。`);
     setGroups((current) => [...current, group]);
     setActiveId(id);
     persist(group);
@@ -190,13 +375,27 @@ export default function App() {
           <h2>联系人</h2>
           <ul>
             {people.map((contact) => (
-              <li key={contact.id}>
+              <li key={contact.id} className="contact-item">
                 <button type="button" className="row" onClick={() => openDirect(contact.id)} disabled={!contact.installed}>
                   <Avatar id={contact.id} />
                   <span>
                     <b>{contact.name}</b>
-                    <small>{contact.installed ? "可加入群" : "未安装"}</small>
+                    <small>
+                      {profiles[contact.id]?.model
+                        ? profiles[contact.id].model
+                        : contact.installed
+                          ? "可加入群"
+                          : "未安装"}
+                    </small>
                   </span>
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  title={`${contact.name} 资料卡设置`}
+                  onClick={() => setEditingContactId(contact.id)}
+                >
+                  设置
                 </button>
               </li>
             ))}
@@ -231,6 +430,11 @@ export default function App() {
             <p>{active?.cwd || "未设置工作目录"}</p>
             {bridgeNote ? <p>{bridgeNote}</p> : null}
           </div>
+          {active && active.memberIds.length === 1 ? (
+            <button type="button" onClick={() => setEditingContactId(active.memberIds[0])}>
+              资料卡设置
+            </button>
+          ) : null}
         </header>
         <div className="messages">
           {!active ? <p className="brief">还没有群。点左上角「新建群」，拉进联系人后再发消息。</p> : null}
@@ -259,6 +463,12 @@ export default function App() {
             </article>
           ))}
         </div>
+        {active && (typingByGroup[active.id]?.length ?? 0) > 0 ? (
+          <div className="typing-bar" role="status" aria-live="polite">
+            <span className="typing-dot" />
+            <span>{typingByGroup[active.id].map((item) => item.label).join(" · ")}</span>
+          </div>
+        ) : null}
         <form
           className="composer"
           onSubmit={(event) => {
@@ -266,31 +476,74 @@ export default function App() {
             send();
           }}
         >
-          {mentionOpen && active ? (
+          {mentionCandidates.length > 0 ? (
             <div className="mention">
-              {active.memberIds.map((id) => (
+              {mentionCandidates.map(({ contact, inGroup }, idx) => (
                 <button
-                  key={id}
+                  key={contact.id}
                   type="button"
-                  onClick={() => {
-                    setDraft((value) => `${value}@${contactById(id).name} `);
-                    setMentionOpen(false);
-                  }}
+                  className={idx === mentionIndex ? "active" : ""}
+                  onClick={() => applyMention(contact.id)}
                 >
-                  {contactById(id).name}
+                  <Avatar id={contact.id} />
+                  <span>{contact.name}</span>
+                  <small>{inGroup ? "群成员" : "点名并加入"}</small>
                 </button>
               ))}
             </div>
           ) : null}
+          <button
+            type="button"
+            className="at-btn"
+            title="点名联系人 (@)"
+            onClick={() => {
+              setDraft((value) => (value.endsWith("@") ? value : `${value}${value && !value.endsWith(" ") ? " " : ""}@`));
+              setMentionQuery("");
+              setMentionIndex(0);
+            }}
+          >
+            @
+          </button>
           <textarea
             value={draft}
-            placeholder={active ? "发给本群。用 @ 点名一个联系人" : ""}
+            placeholder={active ? "发给本群。输入 @ 或点击左侧 @ 点名联系人" : ""}
             onChange={(event) => {
               const value = event.target.value;
               setDraft(value);
-              setMentionOpen(value.endsWith("@"));
+              const match = value.match(/@([^\s@]*)$/);
+              if (match) {
+                setMentionQuery(match[1]);
+                setMentionIndex(0);
+              } else {
+                setMentionQuery(null);
+              }
             }}
             onKeyDown={(event) => {
+              if (mentionCandidates.length > 0) {
+                if (event.key === "ArrowDown") {
+                  event.preventDefault();
+                  setMentionIndex((idx) => (idx + 1) % mentionCandidates.length);
+                  return;
+                }
+                if (event.key === "ArrowUp") {
+                  event.preventDefault();
+                  setMentionIndex((idx) => (idx - 1 + mentionCandidates.length) % mentionCandidates.length);
+                  return;
+                }
+                if (event.key === "Enter" || event.key === "Tab") {
+                  event.preventDefault();
+                  const picked = mentionCandidates[mentionIndex] ?? mentionCandidates[0];
+                  if (picked) {
+                    applyMention(picked.contact.id);
+                  }
+                  return;
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  setMentionQuery(null);
+                  return;
+                }
+              }
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
                 send();
@@ -310,7 +563,11 @@ export default function App() {
                 <Avatar id={id} />
                 <span>
                   <b>{contactById(id).name}</b>
-                  <small>房间会话已打开</small>
+                  <small>
+                    {active.roomSessions.find((room) => room.contactId === id)
+                      ? "房间会话可继续"
+                      : "发送后建立房间会话"}
+                  </small>
                 </span>
               </li>
             ))}
@@ -350,6 +607,118 @@ export default function App() {
           }}
         />
       ) : null}
+      {editingContactId ? (
+        <ContactProfileModal
+          contactId={editingContactId}
+          initial={
+            profiles[editingContactId] ?? {
+              contactId: editingContactId,
+              model: "",
+              apiKey: "",
+              envText: "",
+              persona: "",
+            }
+          }
+          onCancel={() => setEditingContactId(null)}
+          onSave={(profile) => {
+            setProfiles((current) => ({ ...current, [profile.contactId]: profile }));
+            setEditingContactId(null);
+            invoke("save_contact_profile", { profile })
+              .then(() => setBridgeNote(`已保存 ${contactById(profile.contactId).name} 的资料卡设置。`))
+              .catch((error: unknown) => {
+                const detail = error instanceof Error ? error.message : String(error);
+                setBridgeNote(`保存资料卡失败：${detail}`);
+              });
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+const API_KEY_HINTS: Record<string, string> = {
+  dsh: "DEEPSEEK_API_KEY",
+  codex: "OPENAI_API_KEY",
+  grok: "XAI_API_KEY",
+};
+
+function ContactProfileModal({
+  contactId,
+  initial,
+  onCancel,
+  onSave,
+}: {
+  contactId: string;
+  initial: ContactProfile;
+  onCancel: () => void;
+  onSave: (profile: ContactProfile) => void;
+}) {
+  const [model, setModel] = useState(initial.model);
+  const [apiKey, setApiKey] = useState(initial.apiKey);
+  const [envText, setEnvText] = useState(initial.envText);
+  const [persona, setPersona] = useState(initial.persona);
+  const contact = contactById(contactId);
+  const keyHint = API_KEY_HINTS[contactId];
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    onSave({
+      contactId,
+      model: model.trim(),
+      apiKey: apiKey.trim(),
+      envText,
+      persona,
+    });
+  }
+
+  return (
+    <div className="modal">
+      <form className="sheet" onSubmit={submit}>
+        <h3>{contact.name} · 资料卡设置</h3>
+        <label>
+          模型名（Model）
+          <input
+            value={model}
+            onChange={(event) => setModel(event.target.value)}
+            placeholder="留空则使用该 Agent 默认模型"
+          />
+        </label>
+        {keyHint ? (
+          <label>
+            API Key（注入为 {keyHint}）
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(event) => setApiKey(event.target.value)}
+              placeholder={`输入 ${keyHint}，留空沿用系统环境`}
+            />
+          </label>
+        ) : null}
+        <label>
+          附加环境变量（每行 KEY=VALUE）
+          <textarea
+            rows={2}
+            value={envText}
+            onChange={(event) => setEnvText(event.target.value)}
+            placeholder="例如 DEEPSEEK_API_KEY=sk-..."
+          />
+        </label>
+        <label>
+          人设 / 初始指令（新建会话首轮自动附带）
+          <textarea
+            rows={3}
+            value={persona}
+            onChange={(event) => setPersona(event.target.value)}
+            placeholder="例如：你是一个严谨的代码审查助手，回答保持简洁。"
+          />
+        </label>
+        <div className="actions">
+          <button type="button" onClick={onCancel}>
+            取消
+          </button>
+          <button type="submit">保存</button>
+        </div>
+      </form>
     </div>
   );
 }
@@ -382,6 +751,7 @@ function CreateGroup({
             brief: brief.trim() || "未填写项目说明。",
             memberIds,
             works: [],
+            roomSessions: [],
             messages: [
               {
                 id: nextId("m"),

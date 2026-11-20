@@ -19,6 +19,11 @@ export type ChatMessage = {
   workId?: string;
 };
 
+export type RoomSession = {
+  contactId: string;
+  nativeSessionId: string;
+};
+
 export type Group = {
   id: string;
   name: string;
@@ -27,6 +32,7 @@ export type Group = {
   memberIds: string[];
   messages: ChatMessage[];
   works: WorkSession[];
+  roomSessions: RoomSession[];
 };
 
 export const contacts: Contact[] = [
@@ -34,6 +40,9 @@ export const contacts: Contact[] = [
   { id: "qoder", name: "Qoder", installed: true },
   { id: "dsh", name: "DSH", installed: true },
   { id: "codex", name: "Codex", installed: true },
+  { id: "dsh-web", name: "DSH Web", installed: false },
+  { id: "gemini-web", name: "Gemini", installed: false },
+  { id: "chatgpt-web", name: "ChatGPT", installed: false },
 ];
 
 export function contactById(id: string): Contact {
@@ -62,6 +71,7 @@ export function seedGroups(): Group[] {
           status: "Working",
         },
       ],
+      roomSessions: [],
       messages: [
         {
           id: "m1",
