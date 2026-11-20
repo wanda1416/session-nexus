@@ -3,7 +3,7 @@
   "name": "SessionNexus Bridge",
   "version": "0.1.0",
   "description": "Lets SessionNexus operate tabs in this already-signed-in browser.",
-  "permissions": ["tabs", "scripting"],
+  "permissions": ["tabs", "scripting", "alarms"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"

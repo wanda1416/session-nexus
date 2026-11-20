@@ -4,6 +4,7 @@
 //! WebSocket. Page work happens in the extension (`chrome.tabs` / `chrome.scripting`).
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,7 +19,18 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 
 pub const DEFAULT_ADDR: &str = "127.0.0.1:19877";
 
-const TOOLS: &[&str] = &["list_tabs", "find_tab", "snapshot", "fill", "click"];
+const TOOLS: &[&str] = &[
+    "list_tabs",
+    "find_tab",
+    "get_tab",
+    "open_tab",
+    "snapshot",
+    "fill",
+    "click",
+    "press_key",
+    "read_text",
+    "exists",
+];
 
 struct Pending(oneshot::Sender<Result<Value, String>>);
 
@@ -46,7 +58,7 @@ impl Bridge {
         self.inner.extension.lock().await.is_some()
     }
 
-    async fn call_tool(&self, name: &str, arguments: Value) -> Result<Value, String> {
+    pub async fn call_tool(&self, name: &str, arguments: Value) -> Result<Value, String> {
         if !TOOLS.contains(&name) {
             return Err(format!("unknown tool {name}"));
         }
@@ -136,6 +148,24 @@ fn tool_defs() -> Vec<Value> {
             }),
         ),
         tool(
+            "get_tab",
+            "Get the current URL and title of a tab by tabId.",
+            json!({
+                "type": "object",
+                "properties": { "tabId": { "type": "number" } },
+                "required": ["tabId"]
+            }),
+        ),
+        tool(
+            "open_tab",
+            "Open a new browser tab at the given URL.",
+            json!({
+                "type": "object",
+                "properties": { "url": { "type": "string" } },
+                "required": ["url"]
+            }),
+        ),
+        tool(
             "snapshot",
             "Read the page text and mark interactive elements with @e refs.",
             json!({
@@ -160,6 +190,46 @@ fn tool_defs() -> Vec<Value> {
         tool(
             "click",
             "Click an element by CSS selector or @e ref.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "tabId": { "type": "number" },
+                    "selector": { "type": "string" }
+                },
+                "required": ["tabId", "selector"]
+            }),
+        ),
+        tool(
+            "press_key",
+            "Dispatch a keyboard key event on an element.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "tabId": { "type": "number" },
+                    "selector": { "type": "string" },
+                    "key": { "type": "string" },
+                    "ctrlKey": { "type": "boolean" },
+                    "shiftKey": { "type": "boolean" }
+                },
+                "required": ["tabId", "key"]
+            }),
+        ),
+        tool(
+            "read_text",
+            "Read innerText from elements matching a CSS selector.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "tabId": { "type": "number" },
+                    "selector": { "type": "string" },
+                    "lastOnly": { "type": "boolean" }
+                },
+                "required": ["tabId", "selector"]
+            }),
+        ),
+        tool(
+            "exists",
+            "Check whether any element matches a CSS selector.",
             json!({
                 "type": "object",
                 "properties": {
@@ -225,6 +295,10 @@ async fn hold_extension(bridge: Bridge, socket: WebSocket) {
                 match incoming {
                     Some(Ok(Message::Text(text))) => {
                         if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                            if value.get("type").and_then(Value::as_str) == Some("ping") {
+                                let _ = write.send(Message::Text("{\"type\":\"pong\"}".into())).await;
+                                continue;
+                            }
                             if let Some(id) = value.get("id").and_then(Value::as_str) {
                                 let result = if let Some(err) = value.get("error").and_then(Value::as_str) {
                                     Err(err.to_string())
@@ -249,36 +323,45 @@ async fn hold_extension(bridge: Bridge, socket: WebSocket) {
     }
 }
 
-pub fn spawn(addr: &str) {
+pub fn spawn(addr: &str) -> Bridge {
     let addr = addr.to_string();
+    let bridge = Bridge::new();
+    let server_bridge = bridge.clone();
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .expect("browser mcp runtime");
         runtime.block_on(async move {
-            if let Err(err) = listen(&addr).await {
+            if let Err(err) = listen_with_bridge(&addr, server_bridge).await {
                 eprintln!("browser mcp: {err}");
             }
         });
     });
+    bridge
 }
 
 pub async fn listen(addr: &str) -> Result<(), String> {
+    listen_with_bridge(addr, Bridge::new()).await
+}
+
+pub async fn listen_with_bridge(addr: &str, bridge: Bridge) -> Result<(), String> {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|err| format!("bind {addr}: {err}"))?;
-    axum::serve(listener, router(Bridge::new()))
+    axum::serve(listener, router(bridge))
         .await
         .map_err(|err| err.to_string())
 }
 
 fn rand_id() -> u64 {
+    static SEQ: AtomicU64 = AtomicU64::new(1);
     use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
+    let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
-        .unwrap_or(1)
+        .unwrap_or(1);
+    nanos ^ SEQ.fetch_add(1, Ordering::Relaxed).wrapping_mul(0x9e37_79b9_7f4a_7c15)
 }
 
 #[cfg(test)]
