@@ -1,3 +1,4 @@
+pub mod agents;
 pub mod browser_mcp;
 pub mod connector;
 pub mod discover;
@@ -78,13 +79,82 @@ fn core_status() -> CoreStatus {
 }
 
 #[tauri::command]
-fn provider_status() -> Vec<runner::ProviderStatus> {
-    runner::installed_providers()
+async fn provider_status(
+    bridge: tauri::State<'_, browser_mcp::Bridge>,
+) -> Result<Vec<runner::ProviderStatus>, String> {
+    let mut statuses = runner::installed_providers();
+    let ext_connected = bridge.extension_connected().await;
+    for agent in agents::all_agents() {
+        if agent.web_site().is_some() {
+            let profile = agent.profile();
+            statuses.push(runner::ProviderStatus {
+                id: profile.id,
+                name: profile.display_name,
+                installed: ext_connected,
+            });
+        }
+    }
+    Ok(statuses)
 }
 
 #[tauri::command]
-fn run_agent(provider: String, prompt: String, cwd: Option<String>) -> runner::AgentRun {
-    runner::run_agent(&provider, &prompt, cwd.as_deref())
+async fn browser_status(bridge: tauri::State<'_, browser_mcp::Bridge>) -> Result<bool, String> {
+    Ok(bridge.extension_connected().await)
+}
+
+#[tauri::command]
+async fn run_agent(
+    bridge: tauri::State<'_, browser_mcp::Bridge>,
+    db: tauri::State<'_, store::ChatDb>,
+    provider: String,
+    prompt: String,
+    cwd: Option<String>,
+    native_session_id: Option<String>,
+    role: Option<String>,
+) -> Result<runner::AgentRun, String> {
+    let role_str = role.unwrap_or_else(|| "work".into());
+    let contact_profile = db.get_profile(&provider).ok().flatten();
+    if let Some(site) = agents::find_agent(&provider).and_then(|agent| agent.web_site()) {
+        let effective_prompt = runner::apply_persona(
+            &prompt,
+            contact_profile.as_ref(),
+            native_session_id.as_deref(),
+            &role_str,
+        );
+        return Ok(agents::web::run_web_agent(
+            bridge.inner(),
+            &site,
+            &effective_prompt,
+            native_session_id.as_deref(),
+            &role_str,
+        )
+        .await);
+    }
+    tokio::task::spawn_blocking(move || {
+        runner::run_agent_with_profile(
+            &provider,
+            &prompt,
+            cwd.as_deref(),
+            native_session_id.as_deref(),
+            &role_str,
+            contact_profile.as_ref(),
+        )
+    })
+    .await
+    .map_err(|err| format!("任务执行失败：{err}"))
+}
+
+#[tauri::command]
+fn load_contact_profiles(db: tauri::State<store::ChatDb>) -> Result<Vec<store::ContactProfile>, String> {
+    db.load_profiles()
+}
+
+#[tauri::command]
+fn save_contact_profile(
+    db: tauri::State<store::ChatDb>,
+    profile: store::ContactProfile,
+) -> Result<(), String> {
+    db.save_profile(&profile)
 }
 
 #[tauri::command]
@@ -99,17 +169,21 @@ fn save_group(db: tauri::State<store::ChatDb>, group: store::StoredGroup) -> Res
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    browser_mcp::spawn(browser_mcp::DEFAULT_ADDR);
+    let bridge = browser_mcp::spawn(browser_mcp::DEFAULT_ADDR);
     let db = store::ChatDb::open().expect("open session database");
     tauri::Builder::default()
+        .manage(bridge)
         .manage(db)
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             core_status,
             provider_status,
+            browser_status,
             run_agent,
             load_groups,
-            save_group
+            save_group,
+            load_contact_profiles,
+            save_contact_profile
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
