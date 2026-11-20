@@ -32,12 +32,14 @@ CLI 必须已经在 `PATH` 里。找不到命令的联系人标为不可用，�
 
 一个群是一个话题，例如「项目 A」。成员不共用一个全局主会话，所以另一个项目不会接着用这个项目的上下文。
 
-产品模型里有两种会话，详见 [docs/ui.md](docs/ui.md)。
+产品模型里有两种会话，详见 [docs/30-design/02-decisions/01-group-chat.md](docs/30-design/02-decisions/01-group-chat.md)。当前进度在 [docs/20-plans/01-backlog.md](docs/20-plans/01-backlog.md)。
 
 - **房间会话**：一个联系人在一个群里的长期对话。
 - **工作会话**：一次任务对应一次新的 CLI 运行。由 SessionNexus 启动，不是 Agent 自己去拉子代理。
 
-窗口里这两种记录已经分开存放。当前点击发送后，实际执行的仍是一次新的非交互命令。还不会恢复已有的房间会话，也不会先等房间会话给出调度块再开工。
+消息先送到每个目标的房间会话。Grok 和 Qoder 下一次会恢复这个会话。Codex 在 JSON 输出里带有会话 id 时也会恢复。DSH 的 headless 不能恢复，所以它的每一轮房间消息都是带同一份说明的新进程。
+
+房间回复如果以 `dispatch` 代码块结尾，并且 JSON 里有 `task`，SessionNexus 会从聊天里拿掉这块，再新开一次工作运行。这次运行不恢复房间会话。没有这块的回复只留在房间里，不会开工。
 
 ## 浏览器桥
 
@@ -99,17 +101,15 @@ SQLite 数据库：
 src/                 React 聊天窗口
 src-tauri/           Tauri 壳、CLI 运行、SQLite、浏览器 MCP
 bridge/extension/    Manifest V3 扩展
-docs/plan.md         产品与技术方案
-docs/ui.md           群聊和会话模型
+docs/                分层文档，从 docs/README.md 进入
 ```
 
 ## 这一版没有
 
 - 手机客户端，以及 `127.0.0.1:19876` 上的本地 API
-- 恢复房间会话，或等房间会话提出要求后再开工作会话
 - 嵌入完整终端
 - 用 UI Automation 操作其他桌面程序
 - WSL 里的 Agent
 - 全局唯一的主会话
 
-设计和阶段说明在 [docs/plan.md](docs/plan.md) 与 [docs/ui.md](docs/ui.md)。
+设计和进度在 [docs/README.md](docs/README.md)。

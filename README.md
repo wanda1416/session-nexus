@@ -32,12 +32,14 @@ The CLIs must already be on `PATH`. A missing command is marked unavailable and 
 
 A group is one topic, such as "Project A". Members do not share one global master session, so a second project does not reuse the first project's context.
 
-Two session roles are part of the product model. See [docs/ui.md](docs/ui.md).
+Two session roles are part of the product model. See [docs/30-design/02-decisions/01-group-chat.md](docs/30-design/02-decisions/01-group-chat.md). Current progress is in [docs/20-plans/01-backlog.md](docs/20-plans/01-backlog.md).
 
 - A **room session** is the long-running conversation for one contact inside one group.
 - A **work session** is a new CLI run for one task. SessionNexus starts it. The agent does not spawn its own subagent for that task.
 
-The window already stores both as separate rows. The CLI call behind a sent message is still a fresh non-interactive run. It does not yet resume a saved room session, and it does not yet parse a dispatch block from the room session before opening the work session.
+A message is delivered to each target's room session. Grok and Qoder resume that session on the next message. Codex resumes when its JSON output contains a session id. DSH headless cannot resume, so each of its room turns is a new process with the same brief.
+
+If the room reply ends with a `dispatch` block whose JSON has a `task` field, SessionNexus strips that block from the chat and starts a fresh work run. The work run does not resume the room session. A reply without that block stays in the room and does not start work.
 
 ## Browser bridge
 
@@ -99,17 +101,15 @@ An empty database does not insert a sample group. Create one with **新建群**.
 src/                 React chat window
 src-tauri/           Tauri shell, CLI runner, SQLite, browser MCP
 bridge/extension/    Manifest V3 extension
-docs/plan.md         Product and technical plan
-docs/ui.md           Group chat and session model
+docs/                Layered notes. Start at docs/README.md
 ```
 
 ## Not in this build
 
 - Phone client and the loopback API on `127.0.0.1:19876`
-- Resuming a room session, or opening a work session only after the room session asks for one
 - Embedding a full terminal
 - UI Automation for other desktop apps
 - WSL agents
 - A global master session
 
-Design notes live in [docs/plan.md](docs/plan.md) and [docs/ui.md](docs/ui.md).
+Design notes and the progress backlog live under [docs/README.md](docs/README.md).
